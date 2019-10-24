@@ -1,4 +1,19 @@
-#!/usr/bin/env python
+
+# Copyright 2019 The MLPerf Authors. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# =============================================================================
+
 import argparse
 import codecs
 import time
@@ -11,6 +26,12 @@ import torch
 from seq2seq import models
 from seq2seq.inference.inference import Translator
 from seq2seq.utils import AverageMeter
+import subprocess
+import os
+import seq2seq.data.config as config
+from seq2seq.data.dataset import ParallelDataset
+import logging
+from seq2seq.utils import AverageMeter
 
 
 def parse_args():
@@ -18,12 +39,18 @@ def parse_args():
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     # data
     dataset = parser.add_argument_group('data setup')
+    dataset.add_argument('--dataset-dir', default=None, required=True,
+                         help='path to directory with input data')
     dataset.add_argument('-i', '--input', required=True,
                          help='input file (tokenized)')
     dataset.add_argument('-o', '--output', required=True,
                          help='output file (tokenized)')
     dataset.add_argument('-m', '--model', required=True,
                          help='model checkpoint file')
+    dataset.add_argument('-r', '--reference', default=None,
+                         help='full path to the file with reference \
+                         translations (for sacrebleu)')
+
     # parameters
     params = parser.add_argument_group('inference setup')
     params.add_argument('--batch-size', default=128, type=int,
@@ -40,6 +67,10 @@ def parse_args():
                         help='length normalization constant')
     # general setup
     general = parser.add_argument_group('general setup')
+
+    general.add_argument('--mode', default='accuracy', choices=['accuracy',
+            'performance'], help='test in accuracy or performance mode')
+
     general.add_argument('--math', default='fp16', choices=['fp32', 'fp16'],
                          help='arithmetic type')
 
@@ -142,7 +173,23 @@ def main():
 
     tokenizer = checkpoint['tokenizer']
 
-    translation_model = Translator(model,
+
+    test_data = ParallelDataset(
+        src_fname=os.path.join(args.dataset_dir, config.SRC_TEST_FNAME),
+        tgt_fname=os.path.join(args.dataset_dir, config.TGT_TEST_FNAME),
+        tokenizer=tokenizer,
+        min_len=0,
+        max_len=150,
+        sort=False)
+
+    test_loader = test_data.get_loader(batch_size=args.batch_size,
+                                       batch_first=True,
+                                       shuffle=False,
+                                       num_workers=0,
+                                       drop_last=False,
+                                       distributed=False)
+
+    translator = Translator(model,
                                    tokenizer,
                                    beam_size=args.beam_size,
                                    max_seq_len=args.max_seq_len,
@@ -151,73 +198,139 @@ def main():
                                    cov_penalty_factor=args.cov_penalty_factor,
                                    cuda=args.cuda)
 
-    output_file = codecs.open(args.output, 'w', encoding='UTF-8')
+    model.eval()
+    torch.cuda.empty_cache()
 
-    # run model on generated data, for accurate timings starting from 1st batch
-    dummy_data = ['abc ' * (args.max_seq_len // 4)] * args.batch_size
-    translation_model.translate(dummy_data)
-
-    if args.cuda:
-        torch.cuda.synchronize()
+    # only write the output to file in accuracy mode
+    if args.mode == 'accuracy':
+        test_file = open(args.output, 'w', encoding='UTF-8')
 
     batch_time = AverageMeter(False)
-    enc_tok_per_sec = AverageMeter(False)
-    dec_tok_per_sec = AverageMeter(False)
     tot_tok_per_sec = AverageMeter(False)
-
+    iterations = AverageMeter(False)
     enc_seq_len = AverageMeter(False)
     dec_seq_len = AverageMeter(False)
+    stats = {}
 
-    total_lines = 0
-    total_iters = 0
-    with codecs.open(args.input, encoding='UTF-8') as input_file:
-        for idx, lines in enumerate(grouper(input_file, args.batch_size)):
-            lines = [l for l in lines if l]
-            n_lines = len(lines)
-            total_lines += n_lines
+    for i, (src, tgt, indices) in enumerate(test_loader):
+        translate_timer = time.time()
+        src, src_length = src
 
-            translate_timer = time.time()
-            translated_lines, stats = translation_model.translate(lines)
-            elapsed = time.time() - translate_timer
+        if translator.batch_first:
+            batch_size = src.size(0)
+        else:
+            batch_size = src.size(1)
+        beam_size = args.beam_size
 
-            batch_time.update(elapsed, n_lines)
-            etps = stats['total_enc_len'] / elapsed
-            dtps = stats['total_dec_len'] / elapsed
-            enc_seq_len.update(stats['total_enc_len'] / n_lines, n_lines)
-            dec_seq_len.update(stats['total_dec_len'] / n_lines, n_lines)
-            enc_tok_per_sec.update(etps, n_lines)
-            dec_tok_per_sec.update(dtps, n_lines)
+        bos = [translator.insert_target_start] * (batch_size * beam_size)
+        bos = torch.LongTensor(bos)
+        if translator.batch_first:
+            bos = bos.view(-1, 1)
+        else:
+            bos = bos.view(1, -1)
 
-            tot_tok = stats['total_dec_len'] + stats['total_enc_len']
-            ttps = tot_tok / elapsed
-            tot_tok_per_sec.update(ttps, n_lines)
+        src_length = torch.LongTensor(src_length)
+        stats['total_enc_len'] = int(src_length.sum())
 
-            n_iterations = stats['iters']
-            total_iters += n_iterations
+        if args.cuda:
+            src = src.cuda()
+            src_length = src_length.cuda()
+            bos = bos.cuda()
 
-            write_output(output_file, translated_lines)
+        with torch.no_grad():
+            context = translator.model.encode(src, src_length)
+            context = [context, src_length, None]
 
-            if idx % args.print_freq == args.print_freq - 1:
-                print(f'TRANSLATION: '
-                      f'Batch {idx} '
-                      f'Iters {n_iterations}\t'
-                      f'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
-                      f'Tot tok/s {tot_tok_per_sec.val:.0f} ({tot_tok_per_sec.avg:.0f})\t'
-                      f'Enc tok/s {enc_tok_per_sec.val:.0f} ({enc_tok_per_sec.avg:.0f})\t'
-                      f'Dec tok/s {dec_tok_per_sec.val:.0f} ({dec_tok_per_sec.avg:.0f})')
+            if beam_size == 1:
+                generator = translator.generator.greedy_search
+            else:
+                generator = translator.generator.beam_search
+            preds, lengths, counter = generator(batch_size, bos, context)
 
-    output_file.close()
+        stats['total_dec_len'] = lengths.sum().item()
+        stats['iters'] = counter
 
-    print(f'TRANSLATION SUMMARY:\n'
-          f'Lines translated: {total_lines}\t'
-          f'Avg time per batch: {batch_time.avg:.3f} s\t'
-          f'Avg time per sentence: {1000*(batch_time.avg / args.batch_size):.3f} ms\n'
-          f'Avg enc seq len: {enc_seq_len.avg:.2f}\t'
-          f'Avg dec seq len: {dec_seq_len.avg:.2f}\t'
-          f'Total iterations: {total_iters}\t\n'
-          f'Avg tot tok/s: {tot_tok_per_sec.avg:.0f}\t'
-          f'Avg enc tok/s: {enc_tok_per_sec.avg:.0f}\t'
-          f'Avg dec tok/s: {dec_tok_per_sec.avg:.0f}')
+        preds = preds.cpu()
+        lengths = lengths.cpu()
+
+        output = []
+        for idx, pred in enumerate(preds):
+            end = lengths[idx] - 1
+            pred = pred[1: end]
+            pred = pred.tolist()
+            out = translator.tok.detokenize(pred)
+            output.append(out)
+
+        # only write the output to file in accuracy mode
+        if args.mode == 'accuracy':
+            output = [output[indices.index(i)] for i in range(len(output))]
+            for line in output:
+                test_file.write(line)
+                test_file.write('\n')
+
+
+        # Get timing
+        elapsed = time.time() - translate_timer
+        batch_time.update(elapsed, batch_size)
+
+        total_tokens = stats['total_dec_len'] + stats['total_enc_len']
+        ttps = total_tokens / elapsed
+        tot_tok_per_sec.update(ttps, batch_size)
+
+        iterations.update(stats['iters'])
+        enc_seq_len.update(stats['total_enc_len'] / batch_size, batch_size)
+        dec_seq_len.update(stats['total_dec_len'] / batch_size, batch_size)
+
+        if i % 5 == 0:
+            log = []
+            log += f'TEST '
+            log += f'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
+            log += f'Decoder iters {iterations.val:.1f} ({iterations.avg:.1f})\t'
+            log += f'Tok/s {tot_tok_per_sec.val:.0f} ({tot_tok_per_sec.avg:.0f})'
+            log = ''.join(log)
+            print(log)
+
+
+    # summary timing
+    time_per_sentence = (batch_time.avg / batch_size)
+    log = []
+    log += f'TEST SUMMARY:\n'
+    log += f'Lines translated: {len(test_loader.dataset)}\t'
+    log += f'Avg total tokens/s: {tot_tok_per_sec.avg:.0f}\n'
+    log += f'Avg time per batch: {batch_time.avg:.3f} s\t'
+    log += f'Avg time per sentence: {1000*time_per_sentence:.3f} ms\n'
+    log += f'Avg encoder seq len: {enc_seq_len.avg:.2f}\t'
+    log += f'Avg decoder seq len: {dec_seq_len.avg:.2f}\t'
+    log += f'Total decoder iterations: {int(iterations.sum)}'
+    log = ''.join(log)
+    print(log)
+
+    # only write the output to file in accuracy mode
+    if args.mode == 'accuracy':
+        test_file.close()
+
+        test_path = args.output
+        # run moses detokenizer
+        detok_path = os.path.join(args.dataset_dir, config.DETOKENIZER)
+        detok_test_path = test_path + '.detok'
+
+        with open(detok_test_path, 'w') as detok_test_file, \
+                open(test_path, 'r') as test_file:
+            subprocess.run(['perl', f'{detok_path}'], stdin=test_file,
+                           stdout=detok_test_file, stderr=subprocess.DEVNULL)
+
+
+        # run sacrebleu
+        reference_path = os.path.join(args.dataset_dir,
+                                      config.TGT_TEST_TARGET_FNAME)
+        sacrebleu = subprocess.run([f'sacrebleu --input {detok_test_path} \
+                                    {reference_path} --score-only -lc --tokenize intl'],
+                                   stdout=subprocess.PIPE, shell=True)
+        bleu = float(sacrebleu.stdout.strip())
+
+        print(f'BLEU on test dataset: {bleu}')
+
+        print(f'Finished evaluation on test set')
 
 if __name__ == '__main__':
     main()
