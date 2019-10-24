@@ -71,7 +71,7 @@ def parse_args():
     general.add_argument('--mode', default='accuracy', choices=['accuracy',
             'performance'], help='test in accuracy or performance mode')
 
-    general.add_argument('--math', default='fp16', choices=['fp32', 'fp16'],
+    general.add_argument('--math', default='fp16', choices=['fp32', 'fp16', 'bf16'],
                          help='arithmetic type')
 
     batch_first_parser = general.add_mutually_exclusive_group(required=False)
@@ -90,14 +90,14 @@ def parse_args():
                              help='enables cuda (use \'--no-cuda\' to disable)')
     cuda_parser.add_argument('--no-cuda', dest='cuda', action='store_false',
                              help=argparse.SUPPRESS)
-    cuda_parser.set_defaults(cuda=True)
+    cuda_parser.set_defaults(cuda=False)
 
     cudnn_parser = general.add_mutually_exclusive_group(required=False)
     cudnn_parser.add_argument('--cudnn', dest='cudnn', action='store_true',
                               help='enables cudnn (use \'--no-cudnn\' to disable)')
     cudnn_parser.add_argument('--no-cudnn', dest='cudnn', action='store_false',
                               help=argparse.SUPPRESS)
-    cudnn_parser.set_defaults(cudnn=True)
+    cudnn_parser.set_defaults(cudnn=False)
 
     general.add_argument('--print-freq', '-p', default=1, type=int,
                          help='print log every PRINT_FREQ batches')
@@ -150,7 +150,7 @@ def main():
     checkpoint = torch.load(args.model, map_location={'cuda:0': 'cpu'})
 
     vocab_size = checkpoint['tokenizer'].vocab_size
-    model_config = dict(vocab_size=vocab_size, math=checkpoint['config'].math,
+    model_config = dict(vocab_size=vocab_size, math=args.math,
                         **literal_eval(checkpoint['config'].model_config))
     model_config['batch_first'] = args.batch_first
     model = models.GNMT(**model_config)
@@ -165,8 +165,11 @@ def main():
         dtype = torch.FloatTensor
     if args.math == 'fp16':
         dtype = torch.HalfTensor
+    if args.math == 'bf16':
+        dtype = torch.BFloat16Tensor
 
     model.type(dtype)
+
     if args.cuda:
         model = model.cuda()
     model.eval()
