@@ -29,7 +29,7 @@ class GNMT(Seq2Seq):
 
         self.encoder = ResidualRecurrentEncoder(vocab_size, hidden_size,
                                                 num_layers, bias, dropout,
-                                                batch_first, embedder)
+                                                batch_first, math, embedder)
 
         self.decoder = ResidualRecurrentDecoder(vocab_size, hidden_size,
                                                 num_layers, bias, dropout,

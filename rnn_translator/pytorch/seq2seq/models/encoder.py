@@ -8,7 +8,7 @@ import seq2seq.data.config as config
 class ResidualRecurrentEncoder(nn.Module):
 
     def __init__(self, vocab_size, hidden_size=128, num_layers=8, bias=True,
-                 dropout=0, batch_first=False, embedder=None):
+                 dropout=0, batch_first=False, math='fp32', embedder=None):
 
         super(ResidualRecurrentEncoder, self).__init__()
         self.batch_first = batch_first
@@ -28,6 +28,8 @@ class ResidualRecurrentEncoder(nn.Module):
 
         self.dropout = nn.Dropout(p=dropout)
 
+        self.math = math
+
         if embedder is not None:
             self.embedder = embedder
         else:
@@ -36,6 +38,9 @@ class ResidualRecurrentEncoder(nn.Module):
 
     def forward(self, inputs, lengths):
         x = self.embedder(inputs)
+
+        if self.math == 'bf16':
+            x = x.bfloat16()
 
         # bidirectional layer
         x = pack_padded_sequence(x, lengths.cpu().numpy(),

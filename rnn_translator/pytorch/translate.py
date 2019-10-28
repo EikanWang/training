@@ -161,13 +161,10 @@ def main():
 
     model.load_state_dict(state_dict)
 
-    if args.math == 'fp32':
+    if args.math == 'fp32' or args.math == 'bf16':
         dtype = torch.FloatTensor
     if args.math == 'fp16':
         dtype = torch.HalfTensor
-    if args.math == 'bf16':
-        dtype = torch.BFloat16Tensor
-
     model.type(dtype)
 
     if args.cuda:
