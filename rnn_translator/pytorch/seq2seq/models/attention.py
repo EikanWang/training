@@ -5,6 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.parameter import Parameter
 
+debug_bf16_switch = True
 
 class BahdanauAttention(nn.Module):
     """
@@ -125,7 +126,10 @@ class BahdanauAttention(nn.Module):
         t_q = query.size(1)
 
         # FC layers to transform query and key
-        if self.math == 'bf16':
+        if debug_bf16_switch and self.math == 'bf16':
+            if query.dtype != torch.bfloat16:
+                query = query.to(torch.bfloat16)
+                keys = keys.to(torch.bfloat16)
             assert query.dtype == torch.bfloat16
             assert keys.dtype == torch.bfloat16
             query = query.to(torch.float32)
@@ -135,7 +139,7 @@ class BahdanauAttention(nn.Module):
         # TODO move this out of decoder for efficiency during inference
         processed_key = self.linear_k(keys)
 
-        if self.math == 'bf16':
+        if debug_bf16_switch and self.math == 'bf16':
             processed_query = processed_query.to(torch.bfloat16)
             processed_key = processed_key.to(torch.bfloat16)
             query = query.to(torch.bfloat16)
@@ -149,10 +153,12 @@ class BahdanauAttention(nn.Module):
             # TODO I can't use -INF because of overflow check in pytorch
             scores.data.masked_fill_(mask, -65504.0)
 
+
         # Normalize the scores, softmax over t_k
-        if self.math == 'bf16':
+        if debug_bf16_switch and self.math == 'bf16':
             if scores.dtype != torch.bfloat16:
                 scores = scores.to(torch.bfloat16)
+
         scores_normalized = F.softmax(scores, dim=-1)
 
         # Calculate the weighted average of the attention inputs according to

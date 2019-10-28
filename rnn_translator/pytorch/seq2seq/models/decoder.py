@@ -6,6 +6,7 @@ import torch.nn as nn
 from seq2seq.models.attention import BahdanauAttention
 import seq2seq.data.config as config
 
+debug_bf16_switch = True
 
 class RecurrentAttention(nn.Module):
 
@@ -30,7 +31,7 @@ class RecurrentAttention(nn.Module):
         # softmax
         self.attn.set_mask(context_len, context)
 
-        if self.math == 'bf16':
+        if debug_bf16_switch and self.math == 'bf16':
             assert inputs.dtype == torch.bfloat16
             inputs = inputs.to(torch.float32)
             if hidden is not None:
@@ -41,7 +42,7 @@ class RecurrentAttention(nn.Module):
 
         rnn_outputs, hidden = self.rnn(inputs, hidden)
 
-        if self.math == 'bf16':
+        if debug_bf16_switch and self.math == 'bf16':
             rnn_outputs = rnn_outputs.to(torch.bfloat16)
             if hidden is not None:
                 h_tmp = list(hidden)
@@ -70,11 +71,11 @@ class Classifier(nn.Module):
         self.classifier = nn.Linear(in_features, out_features)
 
     def forward(self, x):
-        if self.math == 'bf16':
+        if debug_bf16_switch and self.math == 'bf16':
             assert x.dtype == torch.bfloat16
             x = x.to(torch.float32)
         out = self.classifier(x)
-        if self.math == 'bf16':
+        if debug_bf16_switch and self.math == 'bf16':
             out = out.to(torch.bfloat16)
         out = out[..., :self.out_features]
         return out
@@ -141,7 +142,7 @@ class ResidualRecurrentDecoder(nn.Module):
 
         x = self.embedder(inputs)
 
-        if self.math == 'bf16':
+        if debug_bf16_switch and self.math == 'bf16':
             x = x.bfloat16()
 
         x, h, attn, scores = self.att_rnn(x, hidden[0], enc_context, enc_len)
@@ -150,7 +151,7 @@ class ResidualRecurrentDecoder(nn.Module):
         x = self.dropout(x)
         x = torch.cat((x, attn), dim=2)
 
-        if self.math == 'bf16':
+        if debug_bf16_switch and self.math == 'bf16':
             x = x.to(torch.float32)
 
             if hidden[1] is not None:
@@ -164,7 +165,7 @@ class ResidualRecurrentDecoder(nn.Module):
 
         x, h = self.rnn_layers[0](x, hidden[1])
 
-        if self.math == 'bf16':
+        if debug_bf16_switch and self.math == 'bf16':
             x = x.to(torch.bfloat16)
 
             h_tmp = list(h)
@@ -187,7 +188,7 @@ class ResidualRecurrentDecoder(nn.Module):
             x = self.dropout(x)
             x = torch.cat((x, attn), dim=2)
 
-            if self.math == 'bf16':
+            if debug_bf16_switch and self.math == 'bf16':
                 x = x.to(torch.float32)
                 if hidden[i + 1] is not None:
                     h_tmp = list(hidden[i + 1])
@@ -200,7 +201,7 @@ class ResidualRecurrentDecoder(nn.Module):
 
             x, h = self.rnn_layers[i](x, hidden[i + 1])
 
-            if self.math == 'bf16':
+            if debug_bf16_switch and self.math == 'bf16':
                 x = x.to(torch.bfloat16)
                 h_tmp = list(h)
                 for i, it in enumerate(h_tmp):

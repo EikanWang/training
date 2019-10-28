@@ -5,6 +5,7 @@ from torch.nn.utils.rnn import pad_packed_sequence
 
 import seq2seq.data.config as config
 
+debug_bf16_switch = True
 
 class ResidualRecurrentEncoder(nn.Module):
 
@@ -40,20 +41,20 @@ class ResidualRecurrentEncoder(nn.Module):
     def forward(self, inputs, lengths):
         x = self.embedder(inputs)
 
-        if self.math == 'bf16':
+        if debug_bf16_switch and self.math == 'bf16':
             x = x.bfloat16()
 
         # bidirectional layer
         x = pack_padded_sequence(x, lengths.cpu().numpy(),
                                  batch_first=self.batch_first)
 
-        if self.math == 'bf16':
+        if debug_bf16_switch and self.math == 'bf16':
             assert x.data.dtype == torch.bfloat16
             x = x.to(torch.float32)
 
         x, _ = self.rnn_layers[0](x)
 
-        if self.math == 'bf16':
+        if debug_bf16_switch and self.math == 'bf16':
             x = x.to(torch.bfloat16)
 
         x, _ = pad_packed_sequence(x, batch_first=self.batch_first)
@@ -61,10 +62,10 @@ class ResidualRecurrentEncoder(nn.Module):
         # 1st unidirectional layer
         x = self.dropout(x)
 
-        if self.math == 'bf16':
+        if debug_bf16_switch and self.math == 'bf16':
             x = x.to(torch.float32)
         x, _ = self.rnn_layers[1](x)
-        if self.math == 'bf16':
+        if debug_bf16_switch and self.math == 'bf16':
             x = x.to(torch.bfloat16)
 
         # the rest of unidirectional layers,
@@ -73,10 +74,10 @@ class ResidualRecurrentEncoder(nn.Module):
             residual = x
             x = self.dropout(x)
 
-            if self.math == 'bf16':
+            if debug_bf16_switch and self.math == 'bf16':
                 x = x.to(torch.float32)
             x, _ = self.rnn_layers[i](x)
-            if self.math == 'bf16':
+            if debug_bf16_switch and self.math == 'bf16':
                 x = x.to(torch.bfloat16)
 
             x = x + residual
