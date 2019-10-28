@@ -11,7 +11,7 @@ class BahdanauAttention(nn.Module):
     It should be very similar to tf.contrib.seq2seq.BahdanauAttention
     """
 
-    def __init__(self, query_size, key_size, num_units, normalize=False,
+    def __init__(self, query_size, key_size, num_units, math, normalize=False,
                  dropout=0, batch_first=False):
 
         super(BahdanauAttention, self).__init__()
@@ -27,6 +27,8 @@ class BahdanauAttention(nn.Module):
 
         self.dropout = nn.Dropout(dropout)
         self.mask = None
+
+        self.math = math
 
         if self.normalize:
             self.normalize_scalar = Parameter(torch.Tensor(1))
@@ -123,9 +125,21 @@ class BahdanauAttention(nn.Module):
         t_q = query.size(1)
 
         # FC layers to transform query and key
+        if self.math == 'bf16':
+            assert query.dtype == torch.bfloat16
+            assert keys.dtype == torch.bfloat16
+            query = query.to(torch.float32)
+            keys = keys.to(torch.float32)
+
         processed_query = self.linear_q(query)
         # TODO move this out of decoder for efficiency during inference
         processed_key = self.linear_k(keys)
+
+        if self.math == 'bf16':
+            processed_query = processed_query.to(torch.bfloat16)
+            processed_key = processed_key.to(torch.bfloat16)
+            query = query.to(torch.bfloat16)
+            keys = keys.to(torch.bfloat16)
 
         # scores: (b x t_q x t_k)
         scores = self.calc_score(processed_query, processed_key)
@@ -136,6 +150,9 @@ class BahdanauAttention(nn.Module):
             scores.data.masked_fill_(mask, -65504.0)
 
         # Normalize the scores, softmax over t_k
+        if self.math == 'bf16':
+            if scores.dtype != torch.bfloat16:
+                scores = scores.to(torch.bfloat16)
         scores_normalized = F.softmax(scores, dim=-1)
 
         # Calculate the weighted average of the attention inputs according to

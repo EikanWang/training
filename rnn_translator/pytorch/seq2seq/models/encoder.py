@@ -1,3 +1,4 @@
+import torch
 import torch.nn as nn
 from torch.nn.utils.rnn import pack_padded_sequence
 from torch.nn.utils.rnn import pad_packed_sequence
@@ -45,19 +46,39 @@ class ResidualRecurrentEncoder(nn.Module):
         # bidirectional layer
         x = pack_padded_sequence(x, lengths.cpu().numpy(),
                                  batch_first=self.batch_first)
+
+        if self.math == 'bf16':
+            assert x.data.dtype == torch.bfloat16
+            x = x.to(torch.float32)
+
         x, _ = self.rnn_layers[0](x)
+
+        if self.math == 'bf16':
+            x = x.to(torch.bfloat16)
+
         x, _ = pad_packed_sequence(x, batch_first=self.batch_first)
 
         # 1st unidirectional layer
         x = self.dropout(x)
+
+        if self.math == 'bf16':
+            x = x.to(torch.float32)
         x, _ = self.rnn_layers[1](x)
+        if self.math == 'bf16':
+            x = x.to(torch.bfloat16)
 
         # the rest of unidirectional layers,
         # with residual connections starting from 3rd layer
         for i in range(2, len(self.rnn_layers)):
             residual = x
             x = self.dropout(x)
+
+            if self.math == 'bf16':
+                x = x.to(torch.float32)
             x, _ = self.rnn_layers[i](x)
+            if self.math == 'bf16':
+                x = x.to(torch.bfloat16)
+
             x = x + residual
 
         return x
