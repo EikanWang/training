@@ -290,6 +290,8 @@ def main():
             log = ''.join(log)
             print(log)
 
+        break
+
 
     # summary timing
     time_per_sentence = (batch_time.avg / batch_size)
@@ -321,8 +323,8 @@ def main():
 
 
         # run sacrebleu
-        reference_path = os.path.join(args.dataset_dir,
-                                      config.TGT_TEST_TARGET_FNAME)
+        reference_path = os.path.join(args.dataset_dir, config.TGT_TEST_TARGET_FNAME)
+        reference_path = args.reference
         sacrebleu = subprocess.run([f'sacrebleu --input {detok_test_path} \
                                     {reference_path} --score-only -lc --tokenize intl'],
                                    stdout=subprocess.PIPE, shell=True)
