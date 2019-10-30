@@ -38,23 +38,25 @@ class ResidualRecurrentEncoder(nn.Module):
             self.embedder = nn.Embedding(vocab_size, hidden_size,
                                         padding_idx=config.PAD)
 
+        self.debug_bf16_switch = False
+
     def forward(self, inputs, lengths):
         x = self.embedder(inputs)
 
-        if debug_bf16_switch and self.math == 'bf16':
+        if self.debug_bf16_switch and self.math == 'bf16':
             x = x.bfloat16()
 
         # bidirectional layer
         x = pack_padded_sequence(x, lengths.cpu().numpy(),
                                  batch_first=self.batch_first)
 
-        if debug_bf16_switch and self.math == 'bf16':
+        if self.debug_bf16_switch and self.math == 'bf16':
             assert x.data.dtype == torch.bfloat16
             x = x.to(torch.float32)
 
         x, _ = self.rnn_layers[0](x)
 
-        if debug_bf16_switch and self.math == 'bf16':
+        if self.debug_bf16_switch and self.math == 'bf16':
             x = x.to(torch.bfloat16)
 
         x, _ = pad_packed_sequence(x, batch_first=self.batch_first)
@@ -62,10 +64,10 @@ class ResidualRecurrentEncoder(nn.Module):
         # 1st unidirectional layer
         x = self.dropout(x)
 
-        if debug_bf16_switch and self.math == 'bf16':
+        if self.debug_bf16_switch and self.math == 'bf16':
             x = x.to(torch.float32)
         x, _ = self.rnn_layers[1](x)
-        if debug_bf16_switch and self.math == 'bf16':
+        if self.debug_bf16_switch and self.math == 'bf16':
             x = x.to(torch.bfloat16)
 
         # the rest of unidirectional layers,
@@ -74,10 +76,10 @@ class ResidualRecurrentEncoder(nn.Module):
             residual = x
             x = self.dropout(x)
 
-            if debug_bf16_switch and self.math == 'bf16':
+            if self.debug_bf16_switch and self.math == 'bf16':
                 x = x.to(torch.float32)
             x, _ = self.rnn_layers[i](x)
-            if debug_bf16_switch and self.math == 'bf16':
+            if self.debug_bf16_switch and self.math == 'bf16':
                 x = x.to(torch.bfloat16)
 
             x = x + residual

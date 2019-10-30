@@ -33,6 +33,7 @@ from seq2seq.data.dataset import ParallelDataset
 import logging
 from seq2seq.utils import AverageMeter
 
+import copy
 
 def parse_args():
     parser = argparse.ArgumentParser(description='GNMT Translate',
@@ -198,6 +199,15 @@ def main():
                                    cov_penalty_factor=args.cov_penalty_factor,
                                    cuda=args.cuda)
 
+    translator_bf16 = Translator(model,
+                                   tokenizer,
+                                   beam_size=args.beam_size,
+                                   max_seq_len=args.max_seq_len,
+                                   len_norm_factor=args.len_norm_factor,
+                                   len_norm_const=args.len_norm_const,
+                                   cov_penalty_factor=args.cov_penalty_factor,
+                                   cuda=args.cuda)
+
     model.eval()
     torch.cuda.empty_cache()
 
@@ -238,14 +248,27 @@ def main():
             bos = bos.cuda()
 
         with torch.no_grad():
-            context = translator.model.encode(src, src_length)
-            context = [context, src_length, None]
+            translator.model.encoder.debug_bf16_switch = False
+            translator.model.decoder.debug_bf16_switch = False
+            context_ = translator.model.encode(src, src_length)
+            context_fp32 = [copy.deepcopy(context_).float(), src_length, None]
+            context_bf16 = [copy.deepcopy(context_).bfloat16(), src_length, None]
 
             if beam_size == 1:
                 generator = translator.generator.greedy_search
             else:
                 generator = translator.generator.beam_search
-            preds, lengths, counter = generator(batch_size, bos, context)
+
+            #preds_, lengths_, counter_ = generator(batch_size, bos, context_bf16)
+            generator_new = copy.deepcopy(generator)
+            preds, lengths, counter, scores = generator(batch_size, bos, context_fp32)
+
+            '''
+            translator.model.encoder.debug_bf16_switch = True
+            translator.model.decoder.debug_bf16_switch = True
+            preds_, lengths_, counter_, scores_ = generator_new.beam_search(batch_size, bos, context_bf16)
+            print((scores.abs().min(), scores.abs().max(), (scores_ - scores).abs().max()))
+            '''
 
         stats['total_dec_len'] = lengths.sum().item()
         stats['iters'] = counter

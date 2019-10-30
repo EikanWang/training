@@ -6,7 +6,7 @@ import torch.nn as nn
 from seq2seq.models.attention import BahdanauAttention
 import seq2seq.data.config as config
 
-debug_bf16_switch = True
+debug_bf16_switch = False
 
 class RecurrentAttention(nn.Module):
 
@@ -25,13 +25,15 @@ class RecurrentAttention(nn.Module):
 
         self.math = math
 
+        self.debug_bf16_switch = False
+
     def forward(self, inputs, hidden, context, context_len):
         # set attention mask, sequences have different lengths, this mask
         # allows to include only valid elements of context in attention's
         # softmax
         self.attn.set_mask(context_len, context)
 
-        if debug_bf16_switch and self.math == 'bf16':
+        if self.debug_bf16_switch and self.math == 'bf16':
             assert inputs.dtype == torch.bfloat16
             inputs = inputs.to(torch.float32)
             if hidden is not None:
@@ -42,7 +44,7 @@ class RecurrentAttention(nn.Module):
 
         rnn_outputs, hidden = self.rnn(inputs, hidden)
 
-        if debug_bf16_switch and self.math == 'bf16':
+        if self.debug_bf16_switch and self.math == 'bf16':
             rnn_outputs = rnn_outputs.to(torch.bfloat16)
             if hidden is not None:
                 h_tmp = list(hidden)
@@ -50,7 +52,9 @@ class RecurrentAttention(nn.Module):
                     h_tmp[i] = it.to(torch.bfloat16)
                 hidden = tuple(h_tmp)
 
+        self.attn.debug_bf16_switch = self.debug_bf16_switch
         attn_outputs, scores = self.attn(rnn_outputs, context)
+
         rnn_outputs = self.dropout(rnn_outputs)
 
         return rnn_outputs, hidden, attn_outputs, scores
@@ -69,13 +73,14 @@ class Classifier(nn.Module):
 
         self.math = math
         self.classifier = nn.Linear(in_features, out_features)
+        self.debug_bf16_switch = False
 
     def forward(self, x):
-        if debug_bf16_switch and self.math == 'bf16':
+        if self.debug_bf16_switch and self.math == 'bf16':
             assert x.dtype == torch.bfloat16
             x = x.to(torch.float32)
         out = self.classifier(x)
-        if debug_bf16_switch and self.math == 'bf16':
+        if self.debug_bf16_switch and self.math == 'bf16':
             out = out.to(torch.bfloat16)
         out = out[..., :self.out_features]
         return out
@@ -110,6 +115,7 @@ class ResidualRecurrentDecoder(nn.Module):
         self.math = math
         self.classifier = Classifier(hidden_size, vocab_size, math)
         self.dropout = nn.Dropout(p=dropout)
+        self.debug_bf16_switch = False
 
     def init_hidden(self, hidden):
         if hidden is not None:
@@ -141,17 +147,36 @@ class ResidualRecurrentDecoder(nn.Module):
         hidden = self.init_hidden(hidden)
 
         x = self.embedder(inputs)
+        #x_bf16 = x.bfloat16()
+        #x_fp32 = x.float()
 
-        if debug_bf16_switch and self.math == 'bf16':
+        if self.debug_bf16_switch and self.math == 'bf16':
             x = x.bfloat16()
 
+        self.att_rnn.debug_bf16_switch = self.debug_bf16_switch
         x, h, attn, scores = self.att_rnn(x, hidden[0], enc_context, enc_len)
+        #self.att_rnn.debug_bf16_switch = False
+        #x, h, attn, scores = self.att_rnn(x_fp32, hidden[0], enc_context, enc_len)
+
+        #self.att_rnn.debug_bf16_switch = True
+        #x_, h_, attn_, scores_ = self.att_rnn(x_bf16, hidden[0], enc_context.bfloat16(), enc_len)
+
+        '''
+        cmp = []
+        cmp.append((x_ - x).abs().max())
+        for i, _ in enumerate(h):
+            cmp.append((h_[i] - h[i]).abs().max())
+        cmp.append((attn_ - attn).abs().max())
+        cmp.append((scores_ - scores).abs().max())
+        print(cmp)
+        '''
+
         self.append_hidden(h)
 
         x = self.dropout(x)
         x = torch.cat((x, attn), dim=2)
 
-        if debug_bf16_switch and self.math == 'bf16':
+        if self.debug_bf16_switch and self.math == 'bf16':
             x = x.to(torch.float32)
 
             if hidden[1] is not None:
@@ -165,7 +190,7 @@ class ResidualRecurrentDecoder(nn.Module):
 
         x, h = self.rnn_layers[0](x, hidden[1])
 
-        if debug_bf16_switch and self.math == 'bf16':
+        if self.debug_bf16_switch and self.math == 'bf16':
             x = x.to(torch.bfloat16)
 
             h_tmp = list(h)
@@ -188,7 +213,7 @@ class ResidualRecurrentDecoder(nn.Module):
             x = self.dropout(x)
             x = torch.cat((x, attn), dim=2)
 
-            if debug_bf16_switch and self.math == 'bf16':
+            if self.debug_bf16_switch and self.math == 'bf16':
                 x = x.to(torch.float32)
                 if hidden[i + 1] is not None:
                     h_tmp = list(hidden[i + 1])
@@ -201,7 +226,7 @@ class ResidualRecurrentDecoder(nn.Module):
 
             x, h = self.rnn_layers[i](x, hidden[i + 1])
 
-            if debug_bf16_switch and self.math == 'bf16':
+            if self.debug_bf16_switch and self.math == 'bf16':
                 x = x.to(torch.bfloat16)
                 h_tmp = list(h)
                 for i, it in enumerate(h_tmp):
@@ -219,6 +244,7 @@ class ResidualRecurrentDecoder(nn.Module):
             self.append_hidden(h)
             x = x + residual
 
+        self.classifier.debug_bf16_switch = self.debug_bf16_switch
         x = self.classifier(x)
         hidden = self.package_hidden()
 
