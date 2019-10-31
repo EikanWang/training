@@ -191,8 +191,8 @@ class ResidualRecurrentDecoder(nn.Module):
                 x = x.to(torch.float32)
                 if hidden[i + 1] is not None:
                     h_tmp = list(hidden[i + 1])
-                    for i, it in enumerate(h_tmp):
-                        h_tmp[i] = it.to(torch.float32)
+                    for idx, item in enumerate(h_tmp):
+                        h_tmp[idx] = item.to(torch.float32)
 
                     lst_hidden = list(hidden)
                     lst_hidden[i + 1] = tuple(h_tmp)
@@ -203,14 +203,14 @@ class ResidualRecurrentDecoder(nn.Module):
             if self.math == 'bf16':
                 x = x.to(torch.bfloat16)
                 h_tmp = list(h)
-                for i, it in enumerate(h_tmp):
-                    h_tmp[i] = it.to(torch.bfloat16)
+                for idx, item in enumerate(h_tmp):
+                    h_tmp[idx] = item.to(torch.bfloat16)
                 h = tuple(h_tmp)
 
                 if hidden[i + 1] is not None:
                     h_tmp = list(hidden[i + 1])
-                    for i, it in enumerate(h_tmp):
-                        h_tmp[i] = it.to(torch.bfloat16)
+                    for idx, item in enumerate(h_tmp):
+                        h_tmp[idx] = item.to(torch.bfloat16)
                     lst_hidden = list(hidden)
                     lst_hidden[i + 1] = tuple(h_tmp)
                     hidden = tuple(lst_hidden)

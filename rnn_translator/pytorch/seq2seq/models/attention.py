@@ -83,11 +83,16 @@ class BahdanauAttention(nn.Module):
         att_keys = att_keys.unsqueeze(1).expand(b, t_q, t_k, n)
         sum_qk = att_query + att_keys
 
+        if self.math == 'bf16':
+            if self.normalize_bias.dtype is not torch.bfloat16:
+                self.normalize_bias = nn.Parameter(self.normalize_bias.bfloat16())
+            if self.linear_att.dtype is not torch.bfloat16:
+                self.linear_att = nn.Parameter(self.linear_att.bfloat16())
+
         if self.normalize:
             sum_qk = sum_qk + self.normalize_bias
 
-            tmp = self.linear_att.to(torch.float32)
-            linear_att = tmp / tmp.norm()
+            linear_att = self.linear_att / self.linear_att.norm()
             linear_att = linear_att.to(self.normalize_scalar)
 
             linear_att = linear_att * self.normalize_scalar
@@ -124,22 +129,25 @@ class BahdanauAttention(nn.Module):
         t_k = keys.size(1)
         t_q = query.size(1)
 
+        '''
+        if not query.is_mkldnn:
+            query = query.to_mkldnn()
+        if not keys.is_mkldnn:
+            keys = keys.to_mkldnn()
+        '''
+
         # FC layers to transform query and key
         if self.math == 'bf16':
             assert query.dtype == torch.bfloat16
             assert keys.dtype == torch.bfloat16
-            query = query.to(torch.float32)
-            keys = keys.to(torch.float32)
+            if self.linear_q.weight.dtype is not torch.bfloat16:
+                self.linear_q.weight = nn.Parameter(self.linear_q.weight.bfloat16())
+            if self.linear_k.weight.dtype is not torch.bfloat16:
+                self.linear_k.weight = nn.Parameter(self.linear_k.weight.bfloat16())
 
         processed_query = self.linear_q(query)
         # TODO move this out of decoder for efficiency during inference
         processed_key = self.linear_k(keys)
-
-        if self.math == 'bf16':
-            processed_query = processed_query.to(torch.bfloat16)
-            processed_key = processed_key.to(torch.bfloat16)
-            query = query.to(torch.bfloat16)
-            keys = keys.to(torch.bfloat16)
 
         # scores: (b x t_q x t_k)
         scores = self.calc_score(processed_query, processed_key)
