@@ -3,7 +3,10 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import copy
+
 from torch.nn.parameter import Parameter
+from torch.utils import mkldnn as mkldnn_utils
 
 
 class BahdanauAttention(nn.Module):
@@ -22,6 +25,9 @@ class BahdanauAttention(nn.Module):
 
         self.linear_q = nn.Linear(query_size, num_units, bias=False)
         self.linear_k = nn.Linear(key_size, num_units, bias=False)
+
+        self.mkldnn_linear_q = None
+        self.mkldnn_linear_k = None
 
         self.linear_att = Parameter(torch.Tensor(num_units))
 
@@ -86,6 +92,8 @@ class BahdanauAttention(nn.Module):
         if self.math == 'bf16':
             if self.normalize_bias.dtype is not torch.bfloat16:
                 self.normalize_bias = nn.Parameter(self.normalize_bias.bfloat16())
+            if self.normalize_scalar.dtype is not torch.bfloat16:
+                self.normalize_scalar = nn.Parameter(self.normalize_scalar.bfloat16())
             if self.linear_att.dtype is not torch.bfloat16:
                 self.linear_att = nn.Parameter(self.linear_att.bfloat16())
 
@@ -99,7 +107,7 @@ class BahdanauAttention(nn.Module):
         else:
             linear_att = self.linear_att
 
-        out = F.tanh(sum_qk).matmul(linear_att)
+        out = F.tanh(sum_qk).float().matmul(linear_att.float()).bfloat16()
         return out
 
     def forward(self, query, keys):
@@ -129,25 +137,35 @@ class BahdanauAttention(nn.Module):
         t_k = keys.size(1)
         t_q = query.size(1)
 
-        '''
-        if not query.is_mkldnn:
-            query = query.to_mkldnn()
-        if not keys.is_mkldnn:
-            keys = keys.to_mkldnn()
-        '''
-
         # FC layers to transform query and key
         if self.math == 'bf16':
             assert query.dtype == torch.bfloat16
             assert keys.dtype == torch.bfloat16
-            if self.linear_q.weight.dtype is not torch.bfloat16:
-                self.linear_q.weight = nn.Parameter(self.linear_q.weight.bfloat16())
-            if self.linear_k.weight.dtype is not torch.bfloat16:
-                self.linear_k.weight = nn.Parameter(self.linear_k.weight.bfloat16())
+            #if self.linear_q.weight.dtype is not torch.bfloat16:
+            #    self.linear_q.weight = nn.Parameter(self.linear_q.weight.bfloat16())
+            #if self.linear_k.weight.dtype is not torch.bfloat16:
+            #    self.linear_k.weight = nn.Parameter(self.linear_k.weight.bfloat16())
 
-        processed_query = self.linear_q(query)
+            # Enable MKL-DNN
+            query = query.to_mkldnn()
+            keys = keys.to_mkldnn()
+            if self.mkldnn_linear_q is None:
+                self.mkldnn_linear_q = mkldnn_utils.to_mkldnn(copy.deepcopy(self.linear_q))
+            if self.mkldnn_linear_k is None:
+                self.mkldnn_linear_k = mkldnn_utils.to_mkldnn(copy.deepcopy(self.linear_k))
+
+        if query.is_mkldnn:
+            processed_query = self.mkldnn_linear_q(query).to_dense()
+            query = query.to_dense()
+        else:
+            processed_query = self.linear_q(query)
+
         # TODO move this out of decoder for efficiency during inference
-        processed_key = self.linear_k(keys)
+        if keys.is_mkldnn:
+            processed_key = self.mkldnn_linear_k(keys).to_dense()
+            keys = keys.to_dense()
+        else:
+            processed_key = self.linear_k(keys)
 
         # scores: (b x t_q x t_k)
         scores = self.calc_score(processed_query, processed_key)
@@ -158,9 +176,8 @@ class BahdanauAttention(nn.Module):
             scores.data.masked_fill_(mask, -65504.0)
 
         # Normalize the scores, softmax over t_k
-        if self.math == 'bf16':
-            if scores.dtype != torch.bfloat16:
-                scores = scores.to(torch.bfloat16)
+        assert(scores.dtype == torch.bfloat16 if self.math == 'bf16' else True)
+
         scores_normalized = F.softmax(scores, dim=-1)
 
         # Calculate the weighted average of the attention inputs according to
